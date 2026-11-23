@@ -9,20 +9,6 @@ let inputUUID = CBUUID(string: "6B1E0002-9F4C-4C2A-9B8E-3D2A1C0F5E01")
 /// disconnects. Nothing is sent on it, so all of the Bluetooth link is left for the watch's samples.
 let outputUUID = CBUUID(string: "6B1E0003-9F4C-4C2A-9B8E-3D2A1C0F5E01")
 
-// Settings: `swift run WatchPointer [speed] [steady=…] [quick=…]`, e.g. `swift run WatchPointer 1.2 steady=0.6`.
-private let arguments = CommandLine.arguments.dropFirst()
-private func setting(_ name: String) -> Double? {
-    arguments.first { $0.hasPrefix(name + "=") }.flatMap { Double($0.dropFirst(name.count + 1)) }
-}
-/// Higher = less turn needed to reach the edges.
-let speed = arguments.lazy.compactMap(Double.init).first ?? 1.0
-/// How far you turn from the middle to reach the left/right edge. Up/down uses the same scale.
-let reachDegrees = 25.0 / speed
-/// Smoothing when the hand is nearly still, in Hz. Lower = steadier, but slow moves trail a little.
-let steadyCutoff = setting("steady") ?? 0.8
-/// How quickly smoothing gets out of the way as the hand speeds up. Higher = less lag on fast moves, a bit more shake.
-let quickness = setting("quick") ?? 0.01
-
 /// Tapping the watch jolts it, so clicks land where the pointer was at the moment the thumb touched down
 /// (the watch sends that time). Older watch builds don't, so then it's this long before the click arrived.
 let fallbackRewind = 0.1
@@ -40,11 +26,16 @@ enum Kind: UInt8 { case aim = 0, leftClick = 1, rightClick = 2, scroll = 3, cent
 /// almost none when it moves fast (no lag). The standard choice for pointing devices.
 /// Needs the real time between samples; feeding it bursty arrival times makes it shake and lag.
 struct OneEuroFilter {
-    var minCutoff = steadyCutoff
-    var beta = quickness
+    var minCutoff: Double
+    var beta: Double
     var derivativeCutoff = 1.0
     private var value: Double?
     private var velocity = 0.0
+
+    init(minCutoff: Double = 0.8, beta: Double = 0.01) {
+        self.minCutoff = minCutoff
+        self.beta = beta
+    }
 
     mutating func callAsFunction(_ x: Double, dt: Double) -> Double {
         guard let previous = value, dt > 0 else { value = x; return x }
@@ -58,8 +49,8 @@ struct OneEuroFilter {
     mutating func reset() { value = nil; velocity = 0 }
 }
 
-/// Everything that moves the cursor runs on its own high-priority queue, so the notch's drawing on the
-/// main thread can never delay it. Only the notch's display values hop to the main thread.
+/// Everything that moves the cursor runs on its own high-priority queue, so UI updates on the
+/// main thread can never delay it. Only display values hop to the main thread.
 final class Receiver: NSObject, CBPeripheralManagerDelegate {
     private let live: Live
     private let queue = DispatchQueue(label: "WatchPointer.pointer", qos: .userInteractive)
@@ -69,7 +60,9 @@ final class Receiver: NSObject, CBPeripheralManagerDelegate {
     // Pointer state (only touched on `queue`).
     private var phase = Live.Phase.waiting
     private var watchInfo: WatchInfo?
-    private var filterX = OneEuroFilter(), filterY = OneEuroFilter()
+    private var reachDegrees: Double
+    private var filterX: OneEuroFilter
+    private var filterY: OneEuroFilter
     private var target: CGPoint?   // filtered position from the latest watch sample
     private var shown = CGPoint.zero
     private var lastSample = 0.0   // arrival time, only to notice the watch going quiet
@@ -87,12 +80,28 @@ final class Receiver: NSObject, CBPeripheralManagerDelegate {
 
     init(live: Live) {
         self.live = live
+        self.reachDegrees = 25.0 / max(live.speed, 0.2)
+        self.filterX = OneEuroFilter(minCutoff: live.steady, beta: live.quick)
+        self.filterY = OneEuroFilter(minCutoff: live.steady, beta: live.quick)
         super.init()
+        live.onSettingsChanged = { [weak self] speed, steady, quick in
+            self?.updateSettings(speed: speed, steady: steady, quick: quick)
+        }
         manager = CBPeripheralManager(delegate: self, queue: queue)
         queue.async { self.startFrameLoop() }
     }
 
-    /// Notch values live on the main thread.
+    func updateSettings(speed: Double, steady: Double, quick: Double) {
+        queue.async {
+            self.reachDegrees = 25.0 / max(speed, 0.2)
+            self.filterX.minCutoff = steady
+            self.filterX.beta = quick
+            self.filterY.minCutoff = steady
+            self.filterY.beta = quick
+        }
+    }
+
+    /// UI values live on the main thread.
     private func ui(_ change: @escaping (Live) -> Void) {
         DispatchQueue.main.async { [live] in change(live) }
     }
@@ -109,6 +118,16 @@ final class Receiver: NSObject, CBPeripheralManagerDelegate {
 
     func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
         guard peripheral.state == .poweredOn else {
+            let note: String = switch peripheral.state {
+            case .unauthorized: "請在系統設定開啟藍牙權限"
+            case .poweredOff: "Mac 藍牙已關閉"
+            case .unsupported: "此 Mac 不支援 BLE 周邊模式"
+            default: "藍牙準備中…"
+            }
+            ui {
+                $0.bluetoothReady = false
+                $0.bluetoothNote = note
+            }
             print("Bluetooth not ready (state \(peripheral.state.rawValue)). Turn it on / allow access.")
             return
         }
@@ -123,6 +142,10 @@ final class Receiver: NSObject, CBPeripheralManagerDelegate {
         let name = String((Host.current().localizedName ?? "Mac").prefix(24))
         peripheral.startAdvertising([CBAdvertisementDataServiceUUIDsKey: [serviceUUID],
                                      CBAdvertisementDataLocalNameKey: name])
+        ui {
+            $0.bluetoothReady = true
+            $0.bluetoothNote = "藍牙廣播中（\(name)）"
+        }
         print("Advertising. Open WatchPointer on your Apple Watch.")
     }
 

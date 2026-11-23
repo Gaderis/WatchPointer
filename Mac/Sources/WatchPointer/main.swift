@@ -2,14 +2,17 @@ import AppKit
 
 setvbuf(stdout, nil, _IONBF, 0) // show log lines immediately
 
-let prompt = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-if !AXIsProcessTrustedWithOptions([prompt: true] as CFDictionary) {
-    print("Grant Accessibility access to your terminal app (System Settings › Privacy & Security › Accessibility), then rerun.")
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory) // menu bar app: no Dock icon, no center notch
+
+let live = Live()
+if !live.accessibilityGranted {
+    live.refreshAccessibility(prompt: true)
+    print("Grant Accessibility access to WatchPointer (System Settings › Privacy & Security › Accessibility).")
 }
 
-let app = NSApplication.shared
-app.setActivationPolicy(.accessory) // no Dock icon, just the notch
-let live = Live()
 let receiver = Receiver(live: live)
-let notch = NotchController(live: live)
-app.run()
+let menuBar = MenuBarController(live: live)
+withExtendedLifetime((receiver, menuBar)) {
+    app.run()
+}

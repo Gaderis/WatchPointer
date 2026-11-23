@@ -4,7 +4,13 @@
 Mac/.build/
 Mac/.swiftpm/
 
+# Built Mac app bundle
+WatchPointer.app/
+*.icns
+
 # Xcode
 xcuserdata/
 DerivedData/
 *.xcuserstate
+project.xcworkspace/
+xcshareddata/

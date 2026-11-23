@@ -1,182 +1,183 @@
 import AppKit
+import Combine
 import SwiftUI
 
+// MARK: - Menu Bar Popover UI
 
-// MARK: Geometry
-
-struct NotchMetrics {
-    let width: CGFloat  // the hardware notch (0 on Macs without one)
-    let height: CGFloat
-
-    static func of(_ screen: NSScreen) -> NotchMetrics {
-        if screen.safeAreaInsets.top > 0, let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
-            return NotchMetrics(width: screen.frame.width - left.width - right.width, height: screen.safeAreaInsets.top)
-        }
-        return NotchMetrics(width: 0, height: 24) // no notch: a small island under the menu bar's middle
-    }
-}
-
-enum NotchMode { case collapsed, toast, expanded }
-
-enum NotchLayout {
-    static let ear: CGFloat = 34
-
-    static func size(_ mode: NotchMode, _ m: NotchMetrics) -> CGSize {
-        switch mode {
-        case .collapsed: CGSize(width: m.width + ear * 2, height: m.height)
-        case .toast: CGSize(width: m.width + 170, height: m.height + 42)
-        case .expanded: CGSize(width: max(m.width + 260, 430), height: m.height + 164)
-        }
-    }
-}
-
-/// Flat top that flares into the screen edge, rounded bottom: the shape of the hardware notch.
-struct NotchShape: Shape {
-    var bottomRadius: CGFloat
-    var flare: CGFloat = 6
-
-    var animatableData: CGFloat {
-        get { bottomRadius }
-        set { bottomRadius = newValue }
-    }
-
-    func path(in r: CGRect) -> Path {
-        var p = Path()
-        p.move(to: CGPoint(x: r.minX, y: r.minY))
-        p.addQuadCurve(to: CGPoint(x: r.minX + flare, y: r.minY + flare), control: CGPoint(x: r.minX + flare, y: r.minY))
-        p.addLine(to: CGPoint(x: r.minX + flare, y: r.maxY - bottomRadius))
-        p.addQuadCurve(to: CGPoint(x: r.minX + flare + bottomRadius, y: r.maxY), control: CGPoint(x: r.minX + flare, y: r.maxY))
-        p.addLine(to: CGPoint(x: r.maxX - flare - bottomRadius, y: r.maxY))
-        p.addQuadCurve(to: CGPoint(x: r.maxX - flare, y: r.maxY - bottomRadius), control: CGPoint(x: r.maxX - flare, y: r.maxY))
-        p.addLine(to: CGPoint(x: r.maxX - flare, y: r.minY + flare))
-        p.addQuadCurve(to: CGPoint(x: r.maxX, y: r.minY), control: CGPoint(x: r.maxX - flare, y: r.minY))
-        p.closeSubpath()
-        return p
-    }
-}
-
-// MARK: Views
-
-struct NotchView: View {
+struct MenuBarPopoverView: View {
     @ObservedObject var live: Live
-    let metrics: NotchMetrics
+    let onOpenAccessibility: () -> Void
+    let onOpenGame: () -> Void
+    let onQuit: () -> Void
 
-    @State private var blink = false
+    @State private var showTuning = false
 
-    private var mode: NotchMode { live.hovered || live.pinned ? .expanded : live.toast != nil ? .toast : .collapsed }
-
-    private var status: Color {
+    private var statusColor: Color {
         switch live.phase {
-        case .waiting: Color(white: 0.4)
         case .live: .green
         case .paused, .idle: .orange
+        case .waiting: .secondary
+        }
+    }
+
+    private var statusLabel: String {
+        if let toast = live.toast {
+            switch toast {
+            case .connected: return "手錶已連線"
+            case .centered: return "已重新置中"
+            case .paused: return "已暫停操控"
+            case .resumed: return "已恢復操控"
+            case .lost: return "連線已中斷"
+            }
+        }
+        switch live.phase {
+        case .live: return "操控中"
+        case .paused: return "已暫停"
+        case .idle: return "待機中"
+        case .waiting: return live.bluetoothReady ? "等待手錶連線" : live.bluetoothNote
         }
     }
 
     var body: some View {
-        let size = NotchLayout.size(mode, metrics)
-        ZStack(alignment: .top) {
-            NotchShape(bottomRadius: mode == .collapsed ? 10 : 22)
-                .fill(.black)
-
-            VStack(spacing: 0) {
-                ears.frame(height: metrics.height)
-                switch mode {
-                case .collapsed: EmptyView()
-                case .toast: toast.transition(.opacity)
-                case .expanded: details.transition(.opacity)
+        VStack(alignment: .leading, spacing: 12) {
+            // Header: Watch title + connection pill + battery
+            HStack(alignment: .center, spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(statusColor.opacity(0.15))
+                        .frame(width: 36, height: 36)
+                    Image(systemName: live.phase == .live ? "applewatch.radiowaves.left.and.right" : "applewatch")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(statusColor)
                 }
-            }
-            .padding(.horizontal, 14)
-        }
-        .frame(width: size.width, height: size.height)
-        .animation(.smooth(duration: 0.38), value: mode)
-        .animation(.smooth(duration: 0.3), value: live.phase)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .onChange(of: live.clicks) {
-            blink = true
-            withAnimation(.smooth(duration: 0.25)) { blink = false }
-        }
-    }
 
-    private var ears: some View {
-        HStack {
-            Image(systemName: "applewatch")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(live.phase == .waiting ? Color(white: 0.45) : .white)
-            Spacer(minLength: metrics.width)
-            if mode == .expanded {
-                Button { live.pinned.toggle() } label: {
-                    Image(systemName: live.pinned ? "pin.fill" : "pin")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(live.pinned ? .white : Color(white: 0.5))
-                        .rotationEffect(.degrees(45))
-                        .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .transition(.opacity)
-            }
-            // Like the camera/mic indicator: one small dot.
-            Circle()
-                .fill(status)
-                .frame(width: 6, height: 6)
-                .scaleEffect(blink ? 1.6 : 1)
-        }
-    }
-
-    @ViewBuilder private var toast: some View {
-        let (symbol, text): (String, String) = switch live.toast {
-        case .connected: ("applewatch", "Connected")
-        case .centered: ("scope", "Centered")
-        case .paused: ("pause.fill", "Paused")
-        case .resumed: ("play.fill", "Resumed")
-        case .lost, nil: ("applewatch.slash", "Disconnected")
-        }
-        HStack(spacing: 8) {
-            Image(systemName: symbol)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(live.toast == .paused || live.toast == .lost ? .orange : .white)
-            Text(text)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.white)
-        }
-        .frame(maxHeight: .infinity)
-        .padding(.bottom, 4)
-    }
-
-    private var details: some View {
-        HStack(spacing: 18) {
-            ScreenMap(pointer: live.pointer, active: live.phase == .live)
-                .frame(width: 156, height: 98)
-            VStack(alignment: .leading, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        // The watch's own name (e.g. "Sam's Apple Watch"), then what it is.
-                        Text(live.watch.map { $0.name.isEmpty ? $0.modelName : $0.name } ?? "Apple Watch")
-                            .font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                        Circle().fill(status).frame(width: 6, height: 6)
-                    }
+                    Text(live.watch.map { $0.name.isEmpty ? $0.modelName : $0.name } ?? "WatchPointer")
+                        .font(.system(size: 14, weight: .semibold))
+                        .lineLimit(1)
                     if let watch = live.watch {
-                        Group {
-                            if !watch.name.isEmpty { Text(watch.modelName) }
-                            Text(watch.subtitle)
-                        }
-                        .font(.system(size: 11)).foregroundStyle(Color(white: 0.5)).lineLimit(1)
+                        Text(watch.name.isEmpty ? watch.subtitle : "\(watch.modelName) · \(watch.subtitle)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else {
+                        Text(live.bluetoothNote)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
-                .padding(.bottom, 2)
-                stat("arrow.left.and.right", live.phase == .live ? String(format: "%+.1f°", -live.aimLeft) : "–")
-                stat("arrow.up.and.down", live.phase == .live ? String(format: "%+.1f°", live.aimUp) : "–")
-                stat("waveform", live.phase == .live ? "\(live.rate) Hz" : "–")
-                stat(batterySymbol, live.watch.map { $0.battery < 0 ? "–" : "\($0.battery)%" } ?? "–")
+
+                Spacer(minLength: 4)
+
+                HStack(spacing: 5) {
+                    Circle().fill(statusColor).frame(width: 7, height: 7)
+                    Text(statusLabel)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.primary)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.primary.opacity(0.06), in: Capsule())
             }
-            .foregroundStyle(.white)
-            Spacer(minLength: 0)
+
+            // Accessibility warning banner if permission not granted yet
+            if !live.accessibilityGranted {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .font(.system(size: 13))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("需要「輔助使用」權限才能移動游標")
+                            .font(.system(size: 11.5, weight: .semibold))
+                        Text("請在系統設定開啟 WatchPointer")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 4)
+                    Button("前往設定", action: onOpenAccessibility)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
+                .padding(9)
+                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+
+            // Live aim map + telemetry
+            HStack(spacing: 14) {
+                ScreenMap(pointer: live.pointer, active: live.phase == .live)
+                    .frame(width: 146, height: 92)
+                    .padding(6)
+                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 7) {
+                    statRow("arrow.left.and.right", "左右", live.phase == .live ? String(format: "%+.1f°", -live.aimLeft) : "–")
+                    statRow("arrow.up.and.down", "上下", live.phase == .live ? String(format: "%+.1f°", live.aimUp) : "–")
+                    statRow("waveform", "頻率", live.phase == .live ? "\(live.rate) Hz" : "–")
+                    statRow(batterySymbol, "電量", live.watch.map { $0.battery < 0 ? "–" : "\($0.battery)%" } ?? "–")
+                }
+                Spacer(minLength: 0)
+            }
+
+            Divider()
+
+            // Collapsible sensitivity & smoothing controls
+            DisclosureGroup(isExpanded: $showTuning) {
+                VStack(alignment: .leading, spacing: 8) {
+                    sliderRow(title: "移動速度", value: $live.speed, range: 0.5...2.5, step: 0.05,
+                              display: String(format: "%.2f×", live.speed))
+                    sliderRow(title: "靜止防抖", value: $live.steady, range: 0.2...2.0, step: 0.05,
+                              display: String(format: "%.2f", live.steady))
+                    sliderRow(title: "快速響應", value: $live.quick, range: 0.002...0.05, step: 0.002,
+                              display: String(format: "%.3f", live.quick))
+
+                    HStack {
+                        Spacer()
+                        Button("恢復預設值") { live.resetTuning() }
+                            .buttonStyle(.link)
+                            .font(.system(size: 11))
+                    }
+                }
+                .padding(.top, 6)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                    Text("指標靈敏度與平滑設定")
+                        .font(.system(size: 12, weight: .medium))
+                    Spacer()
+                    Text(String(format: "%.2f×", live.speed))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+
+            Divider()
+
+            // Footer actions
+            HStack(spacing: 8) {
+                Button(action: onOpenGame) {
+                    Label("試玩瞄準遊戲", systemImage: "gamecontroller")
+                        .font(.system(size: 12))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Spacer()
+
+                Button(action: onQuit) {
+                    Text("退出")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .keyboardShortcut("q", modifiers: .command)
+            }
         }
-        .padding(.top, 10)
-        .padding(.horizontal, 10)
-        .frame(maxHeight: .infinity, alignment: .top)
+        .padding(14)
+        .frame(width: 316)
     }
 
     private var batterySymbol: String {
@@ -191,12 +192,31 @@ struct NotchView: View {
         }
     }
 
-    private func stat(_ symbol: String, _ value: String) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: symbol).frame(width: 16).foregroundStyle(Color(white: 0.5))
-            Text(value).monospacedDigit().contentTransition(.numericText())
+    private func statRow(_ symbol: String, _ label: String, _ value: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol)
+                .frame(width: 15)
+                .foregroundStyle(.secondary)
+            Text(label)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 4)
+            Text(value)
+                .monospacedDigit()
+                .fontWeight(.medium)
         }
-        .font(.system(size: 12))
+        .font(.system(size: 11.5))
+    }
+
+    private func sliderRow(title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double, display: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(title).font(.system(size: 11)).foregroundStyle(.secondary)
+                Spacer()
+                Text(display).font(.system(size: 11)).monospacedDigit()
+            }
+            Slider(value: value, in: range, step: step)
+                .controlSize(.small)
+        }
     }
 }
 
@@ -208,66 +228,189 @@ struct ScreenMap: View {
     var body: some View {
         Canvas { context, size in
             let display = MacDisplay().path(in: CGRect(origin: .zero, size: size))
-            context.fill(display, with: .color(Color(white: 0.17)))
+            context.fill(display, with: .color(Color.primary.opacity(0.16)))
             guard active else { return }
             let c = CGPoint(x: pointer.x * size.width, y: pointer.y * size.height)
-            let arrow = context.resolve(Text(Image(systemName: "cursorarrow")).font(.system(size: 14)).foregroundStyle(.white))
-            context.draw(arrow, at: CGPoint(x: c.x - 3, y: c.y - 1), anchor: .topLeading) // tip on the spot
+            let arrow = context.resolve(Text(Image(systemName: "cursorarrow")).font(.system(size: 13)).foregroundStyle(.primary))
+            context.draw(arrow, at: CGPoint(x: c.x - 3, y: c.y - 1), anchor: .topLeading)
         }
     }
 }
 
-// MARK: Window
+// MARK: - Menu Bar Controller
 
-/// Takes the click that lands on it even though the panel never becomes active.
-final class ClickThroughHost<Content: View>: NSHostingView<Content> {
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-}
-
-/// A panel above the menu bar, centered on the notch. Clicks pass through it except right under the pointer.
-final class NotchController {
+/// Native macOS menu bar icon + popover (replaces the center notch overlay).
+final class MenuBarController: NSObject {
     private let live: Live
-    private let screen: NSScreen
-    private let metrics: NotchMetrics
-    private let panel: NSPanel
-    private var hoverTimer: Timer?
+    private let statusItem: NSStatusItem
+    private let popover: NSPopover
+    private var cancellables: Set<AnyCancellable> = []
+    private var axTimer: Timer?
+    private var eventMonitor: Any?
 
     init(live: Live) {
         self.live = live
-        screen = NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main ?? NSScreen.screens[0]
-        metrics = .of(screen)
+        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        self.popover = NSPopover()
+        super.init()
 
-        let size = CGSize(width: 700, height: 260) // room for the biggest state
-        panel = NSPanel(contentRect: NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.maxY - size.height,
-                                            width: size.width, height: size.height),
-                        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = false
-        panel.ignoresMouseEvents = true // turned off only while the pointer is over the notch (see checkHover)
-        panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.mainMenuWindow)) + 3)
-        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        popover.behavior = .transient
+        popover.animates = true
+        popover.contentViewController = NSHostingController(
+            rootView: MenuBarPopoverView(
+                live: live,
+                onOpenAccessibility: { [weak self] in self?.openAccessibilitySettings() },
+                onOpenGame: { [weak self] in self?.openGame() },
+                onQuit: { NSApp.terminate(nil) }
+            )
+        )
 
-        let host = ClickThroughHost(rootView: NotchView(live: live, metrics: metrics))
-        host.sizingOptions = []
-        panel.contentView = host
-        panel.orderFrontRegardless()
+        if let button = statusItem.button {
+            button.target = self
+            button.action = #selector(handleStatusBarClick(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            button.toolTip = "WatchPointer"
+        }
 
-        // Check where the pointer is (trackpad or watch) 20× a second.
-        hoverTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
-            self?.checkHover()
+        updateStatusIcon()
+
+        live.$phase
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.updateStatusIcon() }
+            .store(in: &cancellables)
+
+        live.$accessibilityGranted
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.updateStatusIcon() }
+            .store(in: &cancellables)
+
+        // Periodically check Accessibility status until granted so the banner clears immediately.
+        axTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let granted = AXIsProcessTrusted()
+            if granted != self.live.accessibilityGranted {
+                self.live.accessibilityGranted = granted
+            }
+        }
+
+        // Close popover when clicking outside (extra safety on macOS accessory apps).
+        eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            if let self, self.popover.isShown {
+                self.popover.performClose(nil)
+            }
         }
     }
 
-    private func checkHover() {
-        let open = live.hovered || live.pinned
-        let size = NotchLayout.size(open ? .expanded : .collapsed, metrics)
-        let margin: CGFloat = live.hovered ? 10 : 0 // a little slack before it closes again
-        let rect = NSRect(x: screen.frame.midX - size.width / 2 - margin, y: screen.frame.maxY - size.height - margin,
-                          width: size.width + margin * 2, height: size.height + margin + 1)
-        let inside = rect.contains(NSEvent.mouseLocation)
-        if inside != live.hovered { live.hovered = inside }
-        // Only catch clicks over the notch itself (for the pin), everywhere else they go to the apps below.
-        if panel.ignoresMouseEvents == inside { panel.ignoresMouseEvents = !inside }
+    deinit {
+        axTimer?.invalidate()
+        if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
+    }
+
+    private func updateStatusIcon() {
+        guard let button = statusItem.button else { return }
+        let symbolName: String
+        switch live.phase {
+        case .live:
+            symbolName = "applewatch.radiowaves.left.and.right"
+        case .paused:
+            symbolName = "applewatch.slash"
+        case .waiting, .idle:
+            symbolName = "applewatch"
+        }
+
+        let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "WatchPointer")?
+            .withSymbolConfiguration(config)
+        image?.isTemplate = true
+        button.image = image
+        button.alphaValue = (live.phase == .waiting || live.phase == .idle) ? 0.72 : 1.0
+    }
+
+    @objc private func handleStatusBarClick(_ sender: Any?) {
+        guard let event = NSApp.currentEvent else {
+            togglePopover()
+            return
+        }
+        if event.type == .rightMouseUp {
+            showContextMenu()
+        } else {
+            togglePopover()
+        }
+    }
+
+    private func togglePopover() {
+        guard let button = statusItem.button else { return }
+        if popover.isShown {
+            popover.performClose(nil)
+        } else {
+            live.refreshAccessibility(prompt: false)
+            NSApp.activate(ignoringOtherApps: true)
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+        }
+    }
+
+    private func showContextMenu() {
+        if popover.isShown { popover.performClose(nil) }
+        let menu = NSMenu()
+        let title = live.phase == .live ? "WatchPointer：操控中" : "WatchPointer：等待連線"
+        let statusEntry = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        statusEntry.isEnabled = false
+        menu.addItem(statusEntry)
+        menu.addItem(.separator())
+
+        if !live.accessibilityGranted {
+            let axItem = NSMenuItem(title: "開啟「輔助使用」設定…", action: #selector(openAccessibilityMenuAction), keyEquivalent: "")
+            axItem.target = self
+            menu.addItem(axItem)
+        }
+
+        let gameItem = NSMenuItem(title: "試玩瞄準小遊戲 (Sky Shot)", action: #selector(openGameMenuAction), keyEquivalent: "")
+        gameItem.target = self
+        menu.addItem(gameItem)
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(title: "退出 WatchPointer", action: #selector(quitMenuAction), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    @objc private func openAccessibilityMenuAction() { openAccessibilitySettings() }
+    @objc private func openGameMenuAction() { openGame() }
+    @objc private func quitMenuAction() { NSApp.terminate(nil) }
+
+    private func openAccessibilitySettings() {
+        live.refreshAccessibility(prompt: true)
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func openGame() {
+        var candidates: [URL] = []
+        if let res = Bundle.main.resourceURL {
+            candidates.append(res.appendingPathComponent("Game/index.html"))
+        }
+        // Walk up from the executable path to find Game/index.html when running via `swift run`.
+        var dir = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
+        for _ in 0..<6 {
+            candidates.append(dir.appendingPathComponent("Game/index.html"))
+            let parent = dir.deletingLastPathComponent()
+            if parent == dir { break }
+            dir = parent
+        }
+        let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        candidates.append(cwd.appendingPathComponent("Game/index.html"))
+        candidates.append(cwd.deletingLastPathComponent().appendingPathComponent("Game/index.html"))
+
+        for url in candidates where FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.open(url)
+            if popover.isShown { popover.performClose(nil) }
+            return
+        }
     }
 }
