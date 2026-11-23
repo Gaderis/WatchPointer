@@ -177,7 +177,7 @@ struct MenuBarPopoverView: View {
             }
         }
         .padding(14)
-        .frame(width: 316)
+        .frame(width: 344)
     }
 
     private var batterySymbol: String {
